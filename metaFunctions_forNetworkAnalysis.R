@@ -21,6 +21,25 @@ makeBinaryTable <- function(listDFs) {
 ## binary table function end.
 
 
+makeBinaryTable_fromList <- function(listElements) {
+  cat ("-- makeBinaryTable_fromList function called \n")
+  # First make an empty table
+  uniqRows <- Reduce(union,listElements)
+  zeroTable <- as.data.frame(matrix(0,
+                                    nrow = length(uniqRows),
+                                    length(names(listElements))),
+                             row.names =uniqRows)
+  colnames(zeroTable) = names(listElements)
+  # Then Fill it
+  for (each in names(listElements)){
+    cat ("Filling binary table:", each,"\n")
+    zeroTable[listElements[[each]],each] <- 1
+  }
+  return(zeroTable)
+  cat ("-- binary table done \n")
+  cat ("\n")
+}
+
 ######################################
 ######################################
 #### Finding number of clusters

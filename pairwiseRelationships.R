@@ -11,11 +11,11 @@ plotAllPoints <- function(tmp_logFCPair,Xname,Yname){
                 size=ifelse(nrow(tmp_logFCPair)>900,0.5,0.7)) + 
     geom_hline(yintercept = 0, linetype="dashed",size=0.25,color="darkblue") +
     geom_vline(xintercept = 0, linetype="dashed",size=0.25,color="darkblue") +
-    theme_minimal() + ggtitle(tmpTitle) + xlab("logFC") + ylab("logFC") +
-    theme(
+    theme_gray() + ggtitle(tmpTitle) + xlab("logFC") + ylab("logFC") #+
+    #theme(
       #panel.grid = element_blank()
-      panel.background = element_rect(fill = "white", colour = "grey50")
-    )
+    #  panel.background = element_rect(fill = "white", colour = "grey50")
+    #)
   return(tmpFullPlot)
 }
 
@@ -45,16 +45,16 @@ subset_logFC_direction <- function(tmp_logFCPair,Xname,Yname,Xind,Yind,addFit,di
     geom_point( shape=20,
                 alpha=ifelse(nrow(subsetByDirection)>500,1,1),
                 size=ifelse(nrow(subsetByDirection)>500,0.7,0.7)) + 
-    theme_minimal() + #ggtitle(tmpTitle) + 
-    xlab("logFC") + ylab("logFC") +
-    theme(
-      #panel.grid = element_blank()
-      panel.background = element_rect(fill = "white", colour = "grey50")
-      # panel.grid.minor.y =  element_blank(),
-      # panel.grid.minor.x =  element_blank()
-      #panel.grid.major.y =  element_blank(),
-      #panel.grid.major.x =  element_blank()
-    )
+    theme_gray() + #ggtitle(tmpTitle) + 
+     xlab("logFC") + ylab("logFC") #+
+    # theme(
+    #   #panel.grid = element_blank()
+    #   panel.background = element_rect(fill = "white", colour = "grey50")
+    #   # panel.grid.minor.y =  element_blank(),
+    #   # panel.grid.minor.x =  element_blank()
+    #   #panel.grid.major.y =  element_blank(),
+    #   #panel.grid.major.x =  element_blank()
+    # )
   if (addFit) tmpPlot <- tmpPlot + geom_smooth(method='lm',formula=y~x,se=F,size=0.25)
   ####
   return(list("subset"=subsetByDirection,"plot"=tmpPlot))
@@ -163,11 +163,11 @@ get_gene_relativeComplement <- function(logFCTibble,Xpattern,Ypattern,pValueTabl
   ############################################################
   
   ## Check we're dealing with only two elements
-  Xind <- grep(Xpattern,names(FulllogFCTable)) 
-  Yind <- grep(Ypattern,names(FulllogFCTable))
+  Xind <- grep(Xpattern,names(logFCTibble)) 
+  Yind <- grep(Ypattern,names(logFCTibble))
   # Get names
-  Xname <- names(FulllogFCTable)[Xind]
-  Yname <- names(FulllogFCTable)[Yind]
+  Xname <- names(logFCTibble)[Xind]
+  Yname <- names(logFCTibble)[Yind]
   ### Verify
   if (length(Xind)+length(Yind) != 2){
     cat ("Make each pattern matches one single contrast \n")

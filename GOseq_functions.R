@@ -38,11 +38,11 @@ library(rtracklayer)
 # the name must be quoted and must be inside the GOdata/ directory 
 # GFFfile <- "Name_of_file.gff"
 
-getGeneLengthfromGFF <- function(gffFileName) {
+getGeneLengthfromGFF <- function(GFFPath) {
   ## Requires rtracklayer
   require(rtracklayer)
   ###
-  GFFPath <- paste0("GOdata/",gffFileName)
+  GFFPath <- #paste0("GOdata/",gffFileName)
   GFF <- import.gff(GFFPath,version="3",feature.type="gene")
   grl <- GenomicRanges::reduce(split(GFF, mcols(GFF)$Name)) #Conflict with reduce between GRanges and tidyverse
   reducedGTF <- unlist(grl, use.names=T)
@@ -62,7 +62,7 @@ getGeneLengthfromGFF <- function(gffFileName) {
 
 readGO <- function(goFileName){
   
-  GOitag <- read.table( paste0("GOdata/",goFileName) ,
+  GOitag <- read.table( goFileName ,
                         stringsAsFactors = F,header = T)
   
   GOitagSplit <- split(GOitag,GOitag[,1])
@@ -77,6 +77,7 @@ readGO <- function(goFileName){
   colnames(GOitagNew) <- c("ITAG","GOID")
   head(GOitagNew)
   GOitagNew[,2] <- paste0("GO:",GOitagNew[,2])
+  cat ("Number of GO terms in data:",nrow(GOitagNew),"\n")
   return(GOitagNew)
 }
 
@@ -119,35 +120,221 @@ call_goseq <- function(genesToAnalyze,assayed.genes,AllLengths,go.goseq,removeDo
 }
 
 
-######## Find which genes from each ########
 
-## signGOList is a list of all the GO terms that were significant when testing genes. 
-## GenePatterns is a matrix where each column is a list of genes of interest that were used for the GO enrichment testing
+########## Functions
+############################################################
 
-get_Genes_Per_Category <- function(signGOList,GenePatterns) {
-  getGenesPerCategory <- lapply(seq_along(signGOList),function(DP){
-    require(tidyverse)
-    cat("Genes per category in pattern", names(signGOList)[DP],"\n")
+##### Extract significant GO terms from a list of GO enrichment tests // output from GOseq
+#########################
+get_significant_GOterms <- function(GOresults,pValColumn="over_represented_pvalue",pThreshold = 0.05) {
+  lapply(GOresults, function(x){  
+    pIdx <- which(colnames(x) %in% pValColumn)
+    filterP <- x[,pIdx] < pThreshold
+    return(x[filterP,])})
+}
+####################################################################################################
+
+##### Extract a matrix of p values (or FDR,etc) to prepare as input for a heatmap/tileplot
+#########################
+get_pVals_matrix <- function(GOresults,pValColumn="over_represented_pvalue") {
+  ## Function to return a matrix with all p values from the GO enrichment testing
+  # The output can be processed for p value adjustment and further filtered and passed to a heatmap/tile plot function for vizualization
+  pValsList <- lapply(GOresults, function(y){  
     
+    byOnto <- split(y,y$ontology)
+    
+    pVals_byOnto <- lapply(byOnto,function(x) {
+      pIdx <- which(colnames(x) %in% pValColumn)
+      tmp <- x[,pIdx,drop=F]
+      rownames(tmp) <- ifelse(is.na(x$term),x$category,x$term)
+      return(tmp)
+    })
+    return(pVals_byOnto)
+  })
+  
+  pValsMatrix_BP <- aggregate_list_tables(lapply(pValsList,"[[","BP"))
+  pValsMatrix_MF <- aggregate_list_tables(lapply(pValsList,"[[","MF"))
+  pValsMatrix_CC <- aggregate_list_tables(lapply(pValsList,"[[","CC"))
+  return(
+    list("BP"=pValsMatrix_BP,
+         "MF"=pValsMatrix_MF,
+         "CC"=pValsMatrix_CC)
+  )
+}
+####################################################################################################
+
+##### After testing multiple gene sets for enriched GO categories, see the most frequent terms by ontology
+#########################
+get_significanGO_frequencies <- function(GOsignificantList,GOtermColumn="term",GOontologyColumn="ontology"){
+  # Check libs
+  require(tidyverse)
+  ## Aggregate all into
+  aggregateAll <- do.call("rbind",GOsignificantList)
+  nrow(aggregateAll)==sum(sapply(GOsignificantList, nrow)) # Should be TRUE
+  ## Get frequency of terms
+  freqTerms <- aggregateAll %>% filter(!is.na(.[GOtermColumn])) %>% 
+    select(GOtermColumn,GOontologyColumn) %>% 
+    group_by_all() %>% 
+    summarise("Count"=n()) %>% arrange(.[[2]],desc(Count))
+  return(freqTerms)
+}
+####################################################################################################
+
+
+
+######## Find which genes were tested on each category
+## signGOList is a list of all the GO terms that were significant when testing genes. 
+## listOfGenes is a table where each column is a list of genes of interest that were used for the GO enrichment testing
+#########################
+get_Genes_Per_Category <- function(signGOList,listOfGenes,GOdata,GOColumn="category") {
+  require(tidyverse)
+  
+  ##### Cats by Term
+  # Dictionary of terms to GOID
+  test <- lapply(signGOList,"[",c("category","term"))
+  catBYterm <- lapply(test,function(x){
+    split(x$category,x$term)  
+  })
+  uniqueTerms <- Reduce(union,lapply(catBYterm,names))
+  uniqueGOID <- unlist(Reduce(union,lapply(catBYterm,"[")))
+  names(uniqueTerms) <- uniqueGOID
+  #########################
+  getGenesPerCategory <- lapply(seq_along(signGOList),function(eachSet){
+    
+    cat("Genes per category in pattern", names(signGOList)[eachSet],"\n")
     ## Get DE genes
-    de.genes <- GenePatterns[GenePatterns[,DP]!="",DP]
+    de.genes <- listOfGenes[listOfGenes[,eachSet]!="",eachSet]
     
     ### Get categories
-    categories <- signGOList[[DP]][,"category"]
-    
-    ## From the full GO seq list, get the genes that overlap with the DE
-    DEgenesInCategory <- go.goseq %>%
-      filter(.$GOID %in% categories) %>% group_by(GOID) %>% filter(removeDotGene(ITAG) %in% removeDotGene(de.genes)) %>% nest()
-    ### Convert the table with significant GO categories to a tibble and join the list-columns table
-    test <- as.tibble(signGOList[[DP]])
-    test <- test %>% 
-      left_join(DEgenesInCategory,by=c("category"="GOID")) %>% mutate("Set"=names(signGOList)[DP]) #%>% rename("DEGenesinCategory"="data") 
-    return(test)
+    ############
+    if (nrow(signGOList[[eachSet]]) !=0){
+      
+      categories <- signGOList[[eachSet]][,GOColumn]
+      categories <- categories[!is.na(categories)]
+      
+      ## From the full GO seq list, get the genes that overlap with the DE
+      DEgenesInCategory <- GOdata %>%
+        ## GOColumn="category" is category and not term because the column in the GO table is GOID
+        filter(.$GOID %in% categories) %>% group_by(GOID) %>%  
+        filter(removeDotGene(ITAG) %in% removeDotGene(de.genes)) %>% nest()
+      
+      #### Extract the lists into a matrix where the column names are the categories and contains the genes used for each test
+      names(DEgenesInCategory$data) <- DEgenesInCategory$GOID
+      GenesPerCategory <- condenseGeneList_toMatrix(lapply(DEgenesInCategory$data,as.matrix))
+      
+      
+      colnames(GenesPerCategory) <- uniqueTerms[colnames(GenesPerCategory)]
+      head(GenesPerCategory)
+      return(GenesPerCategory)
+    }
   })
   names(getGenesPerCategory) <- names(signGOList)
   return(getGenesPerCategory)
 }
+####################################################################################################
 
+make_GOfrequency_plot <- function(GOfrequencies,plotTitle="Frequency of Categories",
+                                  minFreq=2,
+                                  xtraName="",
+                                  filterByKeyWord=F,
+                                  filterbyOnto="BP",
+                                  keywords="*"){
+  require(ggplot2)
+  require(tidyverse)
+  ### Adjust plot name
+  if (xtraName != "") plotTitle <- paste(plotTitle,xtraName,sep=" - ")
+  
+  ######## GO term frequency
+  ## Filter by a minimum frequency (default: 2) - ie, gets rid of categories that are unique to a single tested set.
+  tmpCounts <- GOfrequencies
+  if (max(GOfrequencies$Count)>=minFreq) tmpCounts <- GOfrequencies %>% filter(Count >= minFreq) 
+  
+  ###### Filter by Keywords
+  if (filterByKeyWord) {
+    searchThis <- paste(keywords,collapse = "|") 
+    plotTitle <- paste(plotTitle, paste("keywords: ", paste(keywords,collapse=",") ,sep = ""), sep="\n")
+    tmpCounts <- tmpCounts %>%  filter(grepl(searchThis,term,ignore.case = T))
+  } else {
+    cat ("Not filtering by keywords \n")
+  }
+  
+  ###### Filter by ontology
+  tmpCounts <- tmpCounts %>% filter(ontology %in% filterbyOnto)
+  
+  ## Make plot
+  plotGOFreq <- tmpCounts %>% 
+    ggplot(.,aes(x=reorder(term,Count), # Order X axis labels by Count
+                 y=Count, #Counts go in the Y axis
+                 fill=ontology)) + #Color by ontology
+    geom_bar(stat="identity") + coord_flip() + # Do a bar plot 
+    xlab("GO category") + xlab("Frequency") + labs(title=plotTitle)  + 
+    facet_grid(.~ontology,scales="free_y") #Separate by ontology
+  return(plotGOFreq) 
+}
+
+
+
+make_pHeatmap <- function(matrixData,plotTitle="Heatmap Of Categories",col.pal=RColorBrewer::brewer.pal(9,"Blues"),
+                          filterByKeyWord=F, xtraName="", keywords="*",
+                          filterbyOnto=c("BP","MF","CC")){
+  require(ggplot2)
+  require(tidyverse)
+  require(pheatmap)
+  
+  matrixData <- matrixData[names(matrixData) %in% filterbyOnto]
+  cat("pheatmap on p values of:",names(matrixData),"\n")
+  
+  lapply(seq_along(matrixData), function(each){
+    onto <- names(matrixData)[each]
+    tmpData <- matrixData[[each]]
+    
+    ### Set title
+    if (xtraName != "") {plotTitle <- paste(plotTitle,xtraName,onto,sep=" - ")
+    } else plotTitle <- paste(plotTitle,onto,sep=" - ")
+    
+    
+    ###### Filter by Keywords
+    if (filterByKeyWord) {
+      cat ("Filtering by keywords: ",keywords,"\n")
+      searchThis <- paste(keywords,collapse = "|") 
+      plotTitle <- paste(plotTitle, paste("keywords: ", paste(keywords,collapse=",") ,sep = ""), sep="\n") #Update plot title
+      tmpData <- tmpData[grepl(searchThis,rownames(tmpData),ignore.case = T),] #Filter by keyword
+    } else  { cat ("Not filtering by keywords \n")
+    }
+    
+    ## Check that the filtered data is not empty (ie, that at least one word matched)
+    if (nrow(tmpData)==0){
+      cat ("None of the keywords were found \n")
+      cat ("Not filtering by keywords \n")
+      matrixData[[each]]
+      tmpData <- matrixData[[each]] #Return data to the original, unfiltered
+    }
+    
+    
+    ### Filter for terms that are significant in at least 1
+    cat ("Showing genes tha are significant in at least one term \n")
+    tmpData <- tmpData[rowSums(tmpData <= 0.05)>=1,]
+    
+    ### Significant?
+    signifData <- tmpData
+    signifData[signifData<=0.05] <- "*"
+    signifData[signifData>0.05] <- ""
+    
+    tmpData <- -log10(tmpData)
+    size = 10
+    pheatmap::pheatmap(tmpData,
+                       display_numbers = signifData,number_color = "black",
+                       fontsize = size/2.5,
+                       cellwidth = size/2, cellheight = size/2, 
+                       scale = "none",main = plotTitle)
+    
+    
+  })
+}
+
+
+
+######## Graveyard of old functions:
 
 ######## Find which genes from each ########
 ## Calls the findOrtho_Sly2AGI from an accompanying script
@@ -202,94 +389,97 @@ gg_makeTileMap <- function(significantGOtibble,extraName="",keyword=NULL,filterb
     #geom_text(aes(label=signif),size=2.5, hjust = 0.5) + 
     ## Names of axes and other graph aesthetics
     ggtitle(plotTitle) + xlab("Set") + ylab("GO terms") + 
-    theme_minimal() + 
+    theme_gray() + 
     theme(#axis.title.x = element_blank(),
       axis.ticks = element_blank(), 
       panel.background=element_rect(fill="white", colour="lightgray"),
       panel.grid.major.x =  element_blank(),
       panel.grid.major.y = element_blank(),
       axis.text.y = element_text(color="black", size=8),
-      axis.text.x = element_text(angle = 0, hjust = 1))
+      axis.text.x = element_text(angle = 15, hjust = 1),
+      legend.position="bottom")
     #scale_alpha(guide = 'none') + 
     #guides(fill=guide_legend(title="-log10(pVal)"))
   return(plotHeat)
 }
 
-######## Make a wrapper to deal with the results ########
-
-wrapSignificantGOterms <- function(GOresults,GeneList,saveToFile=F,resultsPath="GenesPerCategory",extraName="",keyword=NULL,filterbyOnto=c("MF","BP","CC"),minFreq=1,findOrhto=T) {
-  require(purrrlyr)
-  ##### Filter by p-value of overrepresented (enriched) categories
-  listSignificantGOterms <- lapply(GOresults, function(x){  x[x$over_represented_pvalue < 0.05,] })
-  
-  
-  ### Calls a function to get the genes that were present in each category
-  getGenesPerCategory <- get_Genes_Per_Category(listSignificantGOterms,GeneList)
-  
-  # Make a table out of the lists
-  significantGOtibble <- bind_rows(getGenesPerCategory) %>%  # Bind lists into a single table
-    mutate(uniqueID = row_number())
-  
-  ### Get the orthologues of the genes
-  if (findOrhto) {
-  ### Find the Ath orthologues for each Sly gene
-  significantGOtibble <- findOrthologues_GOgenes(significantGOtibble) 
-  }
-  significantGOtibble
-  
-  
-  ####### Make pretty graphs ########
-  plotTitle <- "Frequency of Categories"
-  if (extraName != "") plotTitle <- paste(plotTitle,extraName,sep=" - ")
-  ## GO term frequency
-  
-  tmpCounts <- significantGOtibble %>% filter(!is.na(term)) %>%
-    group_by(ontology,term) %>% summarise("Count"=n()) %>% arrange(ontology,desc(Count)) 
-  ## 
-  if (max(tmpCounts$Count)>=minFreq) tmpCounts <- tmpCounts %>% filter(Count >= minFreq) 
-  ## Make plot
-  plotByOnthology <- tmpCounts %>% 
-    ggplot(.,aes(x=reorder(term,Count), # Order X axis labels by Count
-                 y=Count, #Counts go in the Y axis
-                 fill=ontology)) + #Color by ontology
-    geom_bar(stat="identity") + coord_flip() + # Do a bar plot 
-    xlab("GO category") + xlab("Frequency") + labs(title=plotTitle)  + 
-    facet_grid(ontology~.,scales="free") #Separate by ontology
-  
-  plotTitle <- "Number of enriched GO terms per set"
-  if (extraName != "") plotTitle <- paste(plotTitle,extraName,sep="\n")
-  ## Terms per Set
-  plotOfCatNumber <- significantGOtibble %>% select(Set) %>% group_by(Set) %>% count() %>%
-    ggplot(.,aes(x=as.factor(Set),y=n)) + labs(title=plotTitle)  + 
-    geom_bar(stat="identity") + #,width = 10/length(unique(significantGOtibble$Set)) ) + # Do a bar plot 
-    xlab("Set") + ylab("# of significant GO terms") + theme_light()
-  
-  
-  ## Heatmap
-  plotHeat <- gg_makeTileMap(significantGOtibble,extraName,keyword,filterbyOnto)
-  
-  ######## Save to files (or not) ########
-  if (saveToFile) { 
-    cat("---\nSaving to file\n---\n")
-    ##### Create directories to save outputs
-    if (extraName != "") resultsPath <- paste(resultsPath,extraName,sep = "-")
-    
-    itagPath <- paste0(resultsPath,"/ITAG_byCategory/")
-    orthoPath <- paste0(resultsPath,"/AthOrthologues_byCategory/")
-    dir.create(itagPath,recursive = T) 
-    dir.create(orthoPath,recursive = T)
-    
-    unite_(significantGOtibble,"tmpName",c("term","ontology","Set"),sep="_",remove=F) %>%  mutate("tmpName"=gsub("[\\>'()\\[\\\\/]","",tmpName)) %>%
-      ## Create new names for the files
-      mutate("itagFile"=paste0(itagPath,"/",gsub("/|[[:space:]]","-",tmpName),".txt")) %>%
-      by_row(~write.table(.$DE_ITAGsinCats, file = .$itagFile,sep = "\t",row.names = F,quote = F)) %>%
-      mutate("orthoFile"=paste0(orthoPath,"/",gsub("/|[[:space:]]","-",tmpName),".txt")) %>%
-      by_row(~write.table(.$Sly2AGI_orthologues, file = .$orthoFile,sep = "\t",row.names = F,quote = F))
-  } else cat("---\nNot saving to file\n---\n")
-  
-  return(list("significantGOtibble"=significantGOtibble,
-              "plotByOnthology"=plotByOnthology,
-              "plotOfCatNumber"=plotOfCatNumber,
-              "plotHeatmap"=plotHeat))
-}
-
+# ######## Make a wrapper to deal with the results ########
+# wrapSignificantGOterms <- function(GOresults,GeneList,saveToFile=F,resultsPath="GenesPerCategory",extraName="",keyword=NULL,filterbyOnto=c("MF","BP","CC"),minFreq=1,findOrtho=F,go.goseq=go.goseq) {
+#   require(purrrlyr)
+#   ##### Filter by p-value of overrepresented (enriched) categories
+#   listSignificantGOterms <- lapply(GOresults, function(x){  x[x$over_represented_pvalue < 0.05,] })
+#   
+#   
+#   ### Calls a function to get the genes that were present in each category
+#   getGenesPerCategory <- get_Genes_Per_Category(listSignificantGOterms,GeneList,go.goseq)
+#   
+#   # Make a table out of the lists
+#   significantGOtibble <- bind_rows(getGenesPerCategory) %>%  # Bind lists into a single table
+#     mutate(uniqueID = row_number())
+#   
+#   ### Get the orthologues of the genes
+#   if (findOrtho) {
+#   ### Find the Ath orthologues for each Sly gene
+#   significantGOtibble <- findOrthologues_GOgenes(significantGOtibble) 
+#   }
+#   significantGOtibble
+#   
+#   
+#   ####### Make pretty graphs ########
+#   plotTitle <- "Frequency of Categories"
+#   if (extraName != "") plotTitle <- paste(plotTitle,extraName,sep=" - ")
+#   ## GO term frequency
+#   
+#   tmpCounts <- significantGOtibble %>% filter(!is.na(term)) %>% 
+#     filter(ontology %in% filterbyOnto) %>% # If only selected ontology term are wanted
+#     group_by(ontology,term) %>% summarise("Count"=n()) %>% arrange(ontology,desc(Count)) 
+#   ## 
+#   if (max(tmpCounts$Count)>=minFreq) tmpCounts <- tmpCounts %>% filter(Count >= minFreq) 
+#   ## Make plot
+#   plotByOnthology <- tmpCounts %>% 
+#     ggplot(.,aes(x=reorder(term,Count), # Order X axis labels by Count
+#                  y=Count, #Counts go in the Y axis
+#                  fill=ontology)) + #Color by ontology
+#     geom_bar(stat="identity") + coord_flip() + # Do a bar plot 
+#     xlab("GO category") + xlab("Frequency") + labs(title=plotTitle)  + 
+#     facet_grid(.~ontology,scales="free") #Separate by ontology
+#   
+#   plotTitle <- "Number of enriched GO terms per set"
+#   if (extraName != "") plotTitle <- paste(plotTitle,extraName,sep="\n")
+#   ## Terms per Set
+#   plotOfCatNumber <- significantGOtibble %>% select(Set) %>% 
+#     mutate(Set=factor(Set,levels = mixedsort(unique(Set),decreasing = F))) %>%
+#     group_by(Set) %>% count() %>%
+#     ggplot(.,aes(x=as.factor(Set),y=n)) + labs(title=plotTitle)  + 
+#     geom_bar(stat="identity") + #,width = 10/length(unique(significantGOtibble$Set)) ) + # Do a bar plot 
+#     xlab("Set") + ylab("# of significant GO terms") + theme_gray()
+#   
+#   
+#   ## Heatmap
+#   plotHeat <- gg_makeTileMap(significantGOtibble,extraName,keyword,filterbyOnto)
+#   
+#   ######## Save to files (or not) ########
+#   if (saveToFile) { 
+#     cat("---\nSaving to file\n---\n")
+#     ##### Create directories to save outputs
+#     if (extraName != "") resultsPath <- paste(resultsPath,extraName,sep = "-")
+#     
+#     itagPath <- paste0(resultsPath,"/ITAG_byCategory/")
+#     orthoPath <- paste0(resultsPath,"/AthOrthologues_byCategory/")
+#     dir.create(itagPath,recursive = T) 
+#     dir.create(orthoPath,recursive = T)
+#     
+#     unite_(significantGOtibble,"tmpName",c("term","ontology","Set"),sep="_",remove=F) %>%  mutate("tmpName"=gsub("[\\>'()\\[\\\\/]","",tmpName)) %>%
+#       ## Create new names for the files
+#       mutate("itagFile"=paste0(itagPath,"/",gsub("/|[[:space:]]","-",tmpName),".txt")) %>%
+#       by_row(~write.table(.$DE_ITAGsinCats, file = .$itagFile,sep = "\t",row.names = F,quote = F)) %>%
+#       mutate("orthoFile"=paste0(orthoPath,"/",gsub("/|[[:space:]]","-",tmpName),".txt")) %>%
+#       by_row(~write.table(.$Sly2AGI_orthologues, file = .$orthoFile,sep = "\t",row.names = F,quote = F))
+#   } else cat("---\nNot saving to file\n---\n")
+#   
+#   return(list("significantGOtibble"=significantGOtibble,
+#               "plotByOnthology"=plotByOnthology,
+#               "plotOfCatNumber"=plotOfCatNumber,
+#               "plotHeatmap"=plotHeat))
+# }
+# 

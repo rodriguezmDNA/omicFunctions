@@ -35,8 +35,8 @@ get_significant_logFC <- function(listDFs) {
   str(logFCvalues)
   
   ## For each 
-  for (each in seq_along(DEListTibble) ){   
-    each <- DEListTibble[[each]]
+  for (each in seq_along(listDFs) ){   
+    each <- listDFs[[each]]
     # print (binaryTable)
     logFCvalues  <- logFCvalues %>%
       left_join( each %>%
@@ -58,15 +58,15 @@ make_binary_table <- function(logFCvalues) {
 }
 
 
-collapse_columns_tibbles <- collapse_columns_tibbles <- function(listDFs,byColumn="logFC"){
+collapse_columns_tibbles <- function(listDFs,byColumn="logFC"){
   collapseColumns <- Reduce(union,lapply(listDFs, "[","Genes")) ## Get all genes in list of DEG tables
   #columns <- names(DEListTibble) # Get all the names of the tables
   #for (each in columns){ binaryTable <- add_column(binaryTable,!!(each):=NA)} # Add empty columns
   str(collapseColumns)
   collapseColumns
   ## For each 
-  for (each in seq_along(DEListTibble) ){   
-    each <- DEListTibble[[each]]
+  for (each in seq_along(listDFs) ){   
+    each <- listDFs[[each]]
     # print (binaryTable)
     
     collapseColumns <- collapseColumns %>%
